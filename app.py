@@ -57,6 +57,7 @@ import os
 import re
 import smtplib
 import sqlite3
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -95,7 +96,7 @@ JUVONNO_API_KEY = _getenv("JUVONNO_API_KEY")
 JUVONNO_TENANT = _getenv("JUVONNO_TENANT")
 JUVONNO_BASE_URL = _getenv(
     "JUVONNO_BASE_URL",
-    f"https://{JUVONNO_TENANT}.juvonno.com/api" if JUVONNO_TENANT else "",
+    f"https://{JUVONNO_TENANT}.juvonno.com" if JUVONNO_TENANT else "",
 )
 BRANCH_CODE = _getenv("BRANCH_CODE")
 BRANCH_ID = int(_getenv("BRANCH_ID", "1") or "1")
@@ -170,6 +171,21 @@ SERVICES = {
 }
 
 app = FastAPI(title="PhysioRehab Juvonno webhook")
+
+
+@app.on_event("startup")
+def _warm_customer_index() -> None:
+    """Build the customer phone index in the background on boot so the
+    first find_appointments call doesn't pay the full-scan cost."""
+    try:
+        client = _client()
+    except Exception as e:
+        log.warning("startup: skipping customer index warm (%s)", e)
+        return
+    _kv_set("customer_index_built_at",
+            datetime.now().isoformat(timespec="seconds"))  # claim: no dupes
+    threading.Thread(target=_rebuild_customer_index, args=(client,),
+                     daemon=True).start()
 
 
 def _client() -> JuvonnoClient:
@@ -402,8 +418,24 @@ def _resolve_staff(client: JuvonnoClient,
 
 def _find_customer_by_phone(client: JuvonnoClient, phone: str,
                             name: str | None = None) -> dict | None:
-    """customers/list has no server-side search: scan pages client-side,
+    """customers/list has no server-side search. Fast path: local phone
+    index (verified against Juvonno). Fallback: scan pages client-side,
     matching across phone/cell/phone2/default_phone_value."""
+    norm = _phone_norm(phone)
+    if norm:
+        _index_rebuild_if_stale(client)
+        cid = _index_lookup(norm)
+        if cid:
+            try:
+                c = client.get_customer(cid)
+                fields = [c.get("phone"), c.get("cell"), c.get("phone2"),
+                          c.get("default_phone_value")]
+                if any(_same_phone(str(f or ""), phone) for f in fields):
+                    return c
+                log.info("stale customer index entry for %s; rescanning",
+                         phone)
+            except JuvonnoError as e:
+                log.warning("indexed customer fetch failed: %s", e)
     cands: list[dict] = []
     try:
         for c in client.iter_all_customers():
@@ -418,6 +450,8 @@ def _find_customer_by_phone(client: JuvonnoClient, phone: str,
         first = name.strip().split()[0].lower()
         cands = [c for c in cands
                  if str(c.get("first_name", "")).lower() == first]
+    if cands:
+        _index_customer_phones(cands[0])
     return cands[0] if cands else None
 
 
@@ -433,16 +467,27 @@ def _split_name(full_name: str) -> tuple[str, str]:
 def _list_appts_in_range(client: JuvonnoClient, branch_code: str,
                          start_date: str, end_date: str,
                          status: str | None = None) -> list[dict]:
-    """GET /api/appointments/list/{branchCode}; unwrap liberally."""
-    raw = client.list_appointments(branch_code, start_date=start_date,
-                                   end_date=end_date, status=status)
-    if isinstance(raw, list):
-        return raw
-    if isinstance(raw, dict):
-        for key in ("list", "appointments", "data"):
-            if isinstance(raw.get(key), list):
-                return raw[key]
-    return []
+    """GET /api/appointments/list/{branchCode}; unwrap liberally. Pages
+    through start/results so growing clinics never silently miss items."""
+    out: list[dict] = []
+    start, page = 0, 200
+    while True:
+        raw = client.list_appointments(branch_code, start_date=start_date,
+                                       end_date=end_date, status=status,
+                                       start=start, results=page)
+        items: list[dict] = []
+        if isinstance(raw, list):
+            items = raw
+        elif isinstance(raw, dict):
+            for key in ("list", "appointments", "data"):
+                if isinstance(raw.get(key), list):
+                    items = raw[key]
+                    break
+        out.extend(items)
+        if len(items) < page:
+            break
+        start += page
+    return out
 
 
 def _busy_intervals(client: JuvonnoClient, branch_code: str,
@@ -719,6 +764,12 @@ def _db() -> sqlite3.Connection:
             message_left INTEGER, recording_url TEXT)""")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS customer_phones (
+            phone_norm TEXT PRIMARY KEY,
+            customer_id INTEGER NOT NULL,
+            name TEXT,
+            updated_at TEXT)""")
     conn.commit()
     return conn
 
@@ -742,6 +793,86 @@ def _kv_set(key: str, value: str) -> None:
         conn.close()
     except Exception as e:
         log.warning("kv write failed: %s", e)
+
+
+# --------------------------------- customer phone index --------------------
+# Juvonno's customers/list has no server-side phone search, so a cold lookup
+# scans every page (~25s for this clinic) — unusable mid-call. We keep a
+# local phone -> customer_id index in SQLite: instant on hit, with a full
+# scan as fallback that also refreshes the index. A background thread keeps
+# it warm (startup + at most once every 24h).
+
+def _phone_norm(phone: str) -> str:
+    d = _digits(phone)
+    return d[-10:] if d else ""
+
+
+def _index_customer_phones(customer: dict) -> None:
+    """Upsert every phone field of one customer record into the index."""
+    try:
+        cid = customer.get("id")
+        if not cid:
+            return
+        name = (f"{customer.get('first_name', '')} "
+                f"{customer.get('last_name', '')}").strip()
+        now = datetime.now().isoformat(timespec="seconds")
+        conn = _db()
+        for f in (customer.get("phone"), customer.get("cell"),
+                  customer.get("phone2"),
+                  customer.get("default_phone_value")):
+            norm = _phone_norm(str(f or ""))
+            if norm:
+                conn.execute(
+                    "INSERT OR REPLACE INTO customer_phones "
+                    "(phone_norm, customer_id, name, updated_at) "
+                    "VALUES (?,?,?,?)", (norm, cid, name, now))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("customer index upsert failed: %s", e)
+
+
+def _index_lookup(phone_norm: str) -> int | None:
+    try:
+        conn = _db()
+        row = conn.execute(
+            "SELECT customer_id FROM customer_phones WHERE phone_norm=?",
+            (phone_norm,)).fetchone()
+        conn.close()
+        return int(row[0]) if row else None
+    except Exception:
+        return None
+
+
+def _rebuild_customer_index(client) -> None:
+    """Full re-scan of Juvonno customers into the phone index. Slow (~25s);
+    always runs in a background thread, never on a call path."""
+    try:
+        n = 0
+        for c in client.iter_all_customers():
+            _index_customer_phones(c)
+            n += 1
+        _kv_set("customer_index_built_at",
+                datetime.now().isoformat(timespec="seconds"))
+        log.info("customer phone index rebuilt: %d customers", n)
+    except Exception as e:
+        log.warning("customer index rebuild failed: %s", e)
+        _kv_set("customer_index_built_at", "")  # allow a retry later
+
+
+def _index_rebuild_if_stale(client) -> None:
+    try:
+        last = _kv_get("customer_index_built_at")
+        age = (datetime.now() - datetime.fromisoformat(last)
+               ).total_seconds() if last else float("inf")
+    except Exception:
+        age = float("inf")
+    if age < 24 * 3600:
+        return
+    _kv_set("customer_index_built_at",
+            datetime.now().isoformat(timespec="seconds"))  # claim: no stampede
+    threading.Thread(target=_rebuild_customer_index, args=(client,),
+                     daemon=True).start()
 
 
 def _to_secs(ts) -> int:
@@ -1072,6 +1203,7 @@ def tool_book_appointment(body: BookIn, request: Request,
         customer_id = customer.get("id")
         if not customer_id:
             return _fail("Couldn't identify the patient record in Juvonno.")
+        _index_customer_phones(customer)  # keep the phone index warm
 
         memo_parts = [f"Booked by voice agent Aria "
                       f"({'new' if body.is_new_patient else 'returning'} patient)."]
