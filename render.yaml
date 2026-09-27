@@ -1,0 +1,54 @@
+# Render deploy config for the PhysioRehab webhook (Juvonno tools + staff alerts).
+# Render -> New -> Web Service -> connect the repo containing juvonno-webhook/
+# as root, or set Root Directory to the folder. Values marked sync:false are
+# entered in the Render dashboard (never in chat or git).
+services:
+  - type: web
+    name: physiorehab-webhook
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    disk:
+      name: call-log
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: JUVONNO_API_KEY
+        sync: false
+      - key: JUVONNO_TENANT
+        value: prcenter
+      - key: BRANCH_CODE
+        value: PRC
+      - key: BRANCH_ID
+        value: "1"
+      - key: WEBHOOK_TOKEN
+        sync: false
+      - key: ALERT_SMS_TO
+        value: "+16474904541"
+      - key: ALERT_EMAIL_TO
+        value: info@physiorehabcenter.com
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        value: "Aria <info@physiorehabcenter.com>"
+      - key: RETELL_API_KEY
+        sync: false
+      - key: ALERT_AGENT_ID
+        value: agent_bd831504019513a74e71f83d2d
+      - key: ENABLE_MESSAGE_ALERTS
+        value: "0"  # digest only; set to "1" to also send instant SMS/email alerts
+      - key: CALLS_DB_PATH
+        value: /data/calls.db  # on the persistent disk
