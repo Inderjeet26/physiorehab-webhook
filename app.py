@@ -1047,6 +1047,7 @@ def health():
     except Exception:
         call_count = -1
     return {"ok": True,
+            "version": "2026-09-27d",
             "juvonno_configured": bool(JUVONNO_API_KEY and JUVONNO_BASE_URL),
             "branch_code_configured": bool(BRANCH_CODE),
             "calls_logged": call_count,
@@ -1249,7 +1250,9 @@ def tool_find_appointments(body: FindIn, request: Request,
                     "message": "No patient record found for that number."})
     cid = customer.get("id")
     try:
-        now = datetime.now()
+        # Juvonno returns tz-aware ISO timestamps; compare against an
+        # aware "now" (naive vs aware comparison raises TypeError -> 500).
+        now = datetime.now().astimezone()
         upcoming = []
         appts = _list_appts_in_range(
             client, branch_code,
@@ -1259,7 +1262,11 @@ def tool_find_appointments(body: FindIn, request: Request,
             if _appt_customer_id(a) != cid:
                 continue
             s, e = _appt_datetime(a)
-            if not s or s < now:
+            if not s:
+                continue
+            if s.tzinfo is None:
+                s = s.replace(tzinfo=ZoneInfo("America/Toronto"))
+            if s < now:
                 continue
             attendants = a.get("attendants") or []
             practs = ", ".join(
@@ -1282,6 +1289,46 @@ def tool_find_appointments(body: FindIn, request: Request,
                            f"{customer.get('last_name', '')}".strip(),
                 "appointments": upcoming,
                 "message": f"Found {len(upcoming)} upcoming appointment(s)."})
+
+
+@app.post("/debug/find_trace")
+def debug_find_trace(body: FindIn, request: Request,
+                     token: str | None = None,
+                     x_webhook_token: str | None = Header(None)):
+    """TEMPORARY diagnostic: runs the find_appointments logic and returns
+    any traceback in the response instead of a bare 500."""
+    _check_token(token, x_webhook_token)
+    import traceback as _tb
+    try:
+        branch_code = _need_branch_code()
+        client = _client()
+        customer = _find_customer_by_phone(client, body.phone, body.name)
+        if not customer:
+            return _ok({"appointments": [], "trace": None})
+        cid = customer.get("id")
+        now = datetime.now().astimezone()
+        upcoming = []
+        appts = _list_appts_in_range(
+            client, branch_code,
+            now.strftime("%Y-%m-%d"),
+            (now + timedelta(days=90)).strftime("%Y-%m-%d"))
+        for a in appts:
+            if _appt_customer_id(a) != cid:
+                continue
+            s, e = _appt_datetime(a)
+            if not s:
+                continue
+            if s.tzinfo is None:
+                s = s.replace(tzinfo=ZoneInfo("America/Toronto"))
+            if s < now:
+                continue
+            upcoming.append({"appointment_id": a.get("id"),
+                             "start": s.strftime("%Y-%m-%d %H:%M")})
+        return _ok({"appointments": upcoming, "trace": None})
+    except Exception as ex:
+        return _ok({"appointments": [],
+                    "error": f"{type(ex).__name__}: {ex}",
+                    "trace": _tb.format_exc()})
 
 
 @app.post("/tools/reschedule_appointment")
