@@ -599,6 +599,34 @@ def _fail(message: str) -> dict:
     return {"success": False, "error": message}
 
 
+async def _tool_body(request: Request, model_cls):
+    """Parse a custom-tool call body.
+
+    Retell nests tool arguments under a wrapper key (e.g. {"args": {...}})
+    instead of sending them as the top-level JSON object; direct API
+    callers send them top-level. Accept both shapes, and don't depend on
+    the Content-Type header being set correctly.
+    """
+    try:
+        raw = await request.body()
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        raise ValueError("request body must be a JSON object")
+    fields = set(getattr(model_cls, "model_fields", {}) or {})
+    if fields and not (fields & set(data.keys())):
+        for wrapper in ("args", "arguments", "parameters", "input"):
+            inner = data.get(wrapper)
+            if isinstance(inner, dict) and (fields & set(inner.keys())):
+                data = {**data, **inner}
+                break
+    try:
+        return model_cls(**data)
+    except Exception as e:
+        raise ValueError(f"invalid parameters: {e}")
+
+
 def _check_token(token: str | None, header_token: str | None):
     if WEBHOOK_TOKEN and (token or header_token) != WEBHOOK_TOKEN:
         raise HTTPException(401, "Invalid webhook token")
@@ -1047,7 +1075,7 @@ def health():
     except Exception:
         call_count = -1
     return {"ok": True,
-            "version": "2026-09-27d",
+            "version": "2026-09-27e",
             "juvonno_configured": bool(JUVONNO_API_KEY and JUVONNO_BASE_URL),
             "branch_code_configured": bool(BRANCH_CODE),
             "calls_logged": call_count,
@@ -1091,10 +1119,14 @@ def tool_list_services(token: str | None = None,
 
 
 @app.post("/tools/check_availability")
-def tool_check_availability(body: AvailabilityIn, request: Request,
-                            token: str | None = None,
-                            x_webhook_token: str | None = Header(None)):
+async def tool_check_availability(request: Request,
+                                  token: str | None = None,
+                                  x_webhook_token: str | None = Header(None)):
     _check_token(token, x_webhook_token)
+    try:
+        body = await _tool_body(request, AvailabilityIn)
+    except ValueError as e:
+        return _fail(str(e))
     branch_code = _need_branch_code()
     client = _client()
     try:
@@ -1147,10 +1179,14 @@ def tool_check_availability(body: AvailabilityIn, request: Request,
 
 
 @app.post("/tools/book_appointment")
-def tool_book_appointment(body: BookIn, request: Request,
-                          token: str | None = None,
-                          x_webhook_token: str | None = Header(None)):
+async def tool_book_appointment(request: Request,
+                                token: str | None = None,
+                                x_webhook_token: str | None = Header(None)):
     _check_token(token, x_webhook_token)
+    try:
+        body = await _tool_body(request, BookIn)
+    except ValueError as e:
+        return _fail(str(e))
     branch_code = _need_branch_code()
     client = _client()
     try:
@@ -1238,10 +1274,14 @@ def tool_book_appointment(body: BookIn, request: Request,
 
 
 @app.post("/tools/find_appointments")
-def tool_find_appointments(body: FindIn, request: Request,
-                           token: str | None = None,
-                           x_webhook_token: str | None = Header(None)):
+async def tool_find_appointments(request: Request,
+                                 token: str | None = None,
+                                 x_webhook_token: str | None = Header(None)):
     _check_token(token, x_webhook_token)
+    try:
+        body = await _tool_body(request, FindIn)
+    except ValueError as e:
+        return _fail(str(e))
     branch_code = _need_branch_code()
     client = _client()
     customer = _find_customer_by_phone(client, body.phone, body.name)
@@ -1291,51 +1331,15 @@ def tool_find_appointments(body: FindIn, request: Request,
                 "message": f"Found {len(upcoming)} upcoming appointment(s)."})
 
 
-@app.post("/debug/find_trace")
-def debug_find_trace(body: FindIn, request: Request,
-                     token: str | None = None,
-                     x_webhook_token: str | None = Header(None)):
-    """TEMPORARY diagnostic: runs the find_appointments logic and returns
-    any traceback in the response instead of a bare 500."""
-    _check_token(token, x_webhook_token)
-    import traceback as _tb
-    try:
-        branch_code = _need_branch_code()
-        client = _client()
-        customer = _find_customer_by_phone(client, body.phone, body.name)
-        if not customer:
-            return _ok({"appointments": [], "trace": None})
-        cid = customer.get("id")
-        now = datetime.now().astimezone()
-        upcoming = []
-        appts = _list_appts_in_range(
-            client, branch_code,
-            now.strftime("%Y-%m-%d"),
-            (now + timedelta(days=90)).strftime("%Y-%m-%d"))
-        for a in appts:
-            if _appt_customer_id(a) != cid:
-                continue
-            s, e = _appt_datetime(a)
-            if not s:
-                continue
-            if s.tzinfo is None:
-                s = s.replace(tzinfo=ZoneInfo("America/Toronto"))
-            if s < now:
-                continue
-            upcoming.append({"appointment_id": a.get("id"),
-                             "start": s.strftime("%Y-%m-%d %H:%M")})
-        return _ok({"appointments": upcoming, "trace": None})
-    except Exception as ex:
-        return _ok({"appointments": [],
-                    "error": f"{type(ex).__name__}: {ex}",
-                    "trace": _tb.format_exc()})
-
-
 @app.post("/tools/reschedule_appointment")
-def tool_reschedule_appointment(body: RescheduleIn, request: Request,
-                                token: str | None = None,
-                                x_webhook_token: str | None = Header(None)):
+async def tool_reschedule_appointment(request: Request,
+                                      token: str | None = None,
+                                      x_webhook_token: str | None = Header(None)):
     _check_token(token, x_webhook_token)
+    try:
+        body = await _tool_body(request, RescheduleIn)
+    except ValueError as e:
+        return _fail(str(e))
     branch_code = _need_branch_code()
     client = _client()
     try:
@@ -1385,10 +1389,14 @@ def tool_reschedule_appointment(body: RescheduleIn, request: Request,
 
 
 @app.post("/tools/cancel_appointment")
-def tool_cancel_appointment(body: CancelIn, request: Request,
-                            token: str | None = None,
-                            x_webhook_token: str | None = Header(None)):
+async def tool_cancel_appointment(request: Request,
+                                  token: str | None = None,
+                                  x_webhook_token: str | None = Header(None)):
     _check_token(token, x_webhook_token)
+    try:
+        body = await _tool_body(request, CancelIn)
+    except ValueError as e:
+        return _fail(str(e))
     client = _client()
     # The exact "cancel" status string is not in Juvonno's public docs
     # (active appointments show status "open"). Juvonno validates strictly
