@@ -137,6 +137,14 @@ ENABLE_MESSAGE_ALERTS = _getenv("ENABLE_MESSAGE_ALERTS", "0") == "1"
 ENABLE_BOOKING_FAILURE_ALERTS = _getenv(
     "ENABLE_BOOKING_FAILURE_ALERTS", "1") == "1"
 
+# ---- instant booking-completed alerts (ON by default) ----
+# When Aria successfully books an appointment, the clinic inbox gets an
+# email with who/when/why so staff see every phone booking. Email only
+# (no SMS) to avoid text noise. Set
+# ENABLE_BOOKING_COMPLETED_ALERTS=0 to turn these off.
+ENABLE_BOOKING_COMPLETED_ALERTS = _getenv(
+    "ENABLE_BOOKING_COMPLETED_ALERTS", "1") == "1"
+
 # Only process post-call events for Aria's agent (empty = accept any agent).
 ALERT_AGENT_ID = _getenv("ALERT_AGENT_ID", "agent_bd831504019513a74e71f83d2d")
 
@@ -314,6 +322,45 @@ def _appt_customer_id(a: dict) -> int | None:
     return None
 
 
+_CANCELLED_STATUSES = {"cancelled", "cancel", "cancelled_by_patient",
+                       "canceled", "cancelled_by_clinic"}
+
+
+def _practitioner_busy(client: JuvonnoClient, branch_code: str,
+                       day: date_cls) -> dict[str, list[tuple[datetime, datetime]]]:
+    """Real busy intervals per practitioner for one day, from the
+    appointments list — NOT the availability grid.
+
+    Verified 2026-10-17: the grid still offered 11:00/11:15/11:30/11:45
+    after the 11:00-11:45 booking existed, so the grid cannot be trusted
+    for overlap detection. Times are normalized to naive America/Toronto
+    wall time to match the grid's naive datetimes. Cancelled
+    appointments do not block. Returns {staff_num: [(start, end)]}."""
+    tz = ZoneInfo("America/Toronto")
+    start = day.strftime("%Y-%m-%d")
+    end = (day + timedelta(days=1)).strftime("%Y-%m-%d")
+    busy: dict[str, list[tuple[datetime, datetime]]] = {}
+    for a in _list_appts_in_range(client, branch_code, start, end):
+        status = str(a.get("status") or "").strip().lower()
+        if status in _CANCELLED_STATUSES:
+            continue
+        s, e = _appt_datetime(a)
+        if not s or not e:
+            continue
+        if s.tzinfo is not None:
+            s = s.astimezone(tz).replace(tzinfo=None)
+        if e.tzinfo is not None:
+            e = e.astimezone(tz).replace(tzinfo=None)
+        attendants = a.get("attendants") or []
+        nums = {str(x.get("num") or "") for x in attendants
+                if isinstance(x, dict) and x.get("num") is not None}
+        if not nums:
+            continue
+        for num in nums:
+            busy.setdefault(num, []).append((s, e))
+    return busy
+
+
 def _availability_slots(client: JuvonnoClient, branch_code: str,
                         day: date_cls, schedule_type_id: int,
                         practitioner_num: str | None = None,
@@ -342,11 +389,21 @@ def _availability_slots(client: JuvonnoClient, branch_code: str,
         entries = []
     day_key = day.strftime("%Y-%m-%d")
     slots: list[dict] = []
+    # Overlap guard: the grid does not reflect real bookings, so filter
+    # every candidate start against the practitioner's real appointments.
+    # On lookup failure, fall back to grid-only rather than failing the
+    # whole availability check; _slot_free re-checks at booking time.
+    try:
+        busy_by_staff = _practitioner_busy(client, branch_code, day)
+    except Exception as e:
+        log.warning("busy-interval lookup failed, using grid only: %s", e)
+        busy_by_staff = {}
     for entry in entries:
         staff = entry.get("staff") or {}
         if practitioner_num and str(staff.get("num") or "") != practitioner_num:
             continue
         name = f"{staff.get('first_name', '')} {staff.get('last_name', '')}".strip()
+        staff_busy = busy_by_staff.get(str(staff.get("num") or ""), [])
         # Sorted per-staff grid points: (start, step_min, schedule_type_id,
         # available, schedule_type_name)
         points: list[tuple[datetime, int, int, bool, str]] = []
@@ -384,6 +441,13 @@ def _availability_slots(client: JuvonnoClient, branch_code: str,
                     ok = False
                     break
             if not ok:
+                continue
+            end = start + timedelta(minutes=duration_min)
+            # Real-appointment overlap: never offer a start whose
+            # [start, end) overlaps this practitioner's existing
+            # booking. Back-to-back is fine (10-11 then 11-12).
+            if any(_overlaps(start, end, b[0], b[1])
+                   for b in staff_busy):
                 continue
             slots.append({
                 "start": start.strftime("%Y-%m-%d %H:%M"),
@@ -878,6 +942,49 @@ def _extract_booking_failure_alert(call: dict) -> dict | None:
     }
 
 
+def _extract_booking_completed_alert(call: dict) -> dict | None:
+    """Build the 'appointment booked' staff email from a call_analyzed
+    payload. Fires when the post-call analysis says a booking was
+    requested and completed. Carries caller name, callback number,
+    reason for calling and the call summary (which holds the booked
+    day/time/practitioner) so staff can see the booking at a glance.
+    Email only — no SMS for completed bookings."""
+    analysis = call.get("call_analysis") or {}
+    custom = analysis.get("custom_analysis_data") or {}
+    if not _truthy(custom.get("booking_requested")):
+        return None
+    if not _truthy(custom.get("booking_completed")):
+        return None
+    caller_name = str(custom.get("caller_name") or "").strip() or "Unknown"
+    callback = str(custom.get("callback_number")
+                   or call.get("from_number") or "").strip()
+    reason = str(custom.get("reason_for_call") or "").strip()
+    summary = str(analysis.get("call_summary") or "").strip()
+    start_ts = call.get("start_timestamp")
+    try:
+        call_time = (datetime.fromtimestamp(int(start_ts) / 1000)
+                     .strftime("%Y-%m-%d %I:%M %p")) if start_ts else "unknown"
+    except (TypeError, ValueError):
+        call_time = "unknown"
+    lines = [
+        "Aria booked an appointment in Juvonno.",
+        "",
+        f"From: {caller_name}",
+        f"Callback: {callback or 'not provided'}",
+        f"Call time: {call_time}",
+        f"Reason for calling: {reason or 'not recorded'}",
+    ]
+    if summary:
+        lines += ["", "Booking:", summary]
+    recording = call.get("recording_url")
+    if recording:
+        lines += ["", f"Recording: {recording}"]
+    return {
+        "email_subject": f"[Aria] Appointment booked — {caller_name}",
+        "email_body": "\n".join(lines),
+    }
+
+
 # ------------------------------------------------- call log + digest --
 # Every analyzed call is logged to SQLite so the daily digest can list all
 # calls received (time, caller name, phone, summary) as a callback list
@@ -1129,11 +1236,22 @@ async def retell_post_call(request: Request,
         booking_sent = sms_n > 0 or email_n > 0
         log.info("post-call %s: booking-failure alert sms=%d email=%d",
                  call_id or "?", sms_n, email_n)
+    # Booking-completed alert: email-only, same instant path.
+    completed_alert = _extract_booking_completed_alert(call)
+    completed_sent = False
+    if completed_alert and ENABLE_BOOKING_COMPLETED_ALERTS:
+        email_n = _send_email_smtp(ALERT_EMAIL_TO,
+                                   completed_alert["email_subject"],
+                                   completed_alert["email_body"])
+        completed_sent = email_n > 0
+        log.info("post-call %s: booking-completed alert email=%d",
+                 call_id or "?", email_n)
     if not ENABLE_MESSAGE_ALERTS:
         # Digest-only mode: log the call, skip instant message alerts.
-        # (Booking-failure alerts above still fire — separate flag.)
+        # (Booking alerts above still fire — separate flags.)
         return {"ok": True, "alert_sent": False,
                 "booking_alert_sent": booking_sent,
+                "booking_completed_alert_sent": completed_sent,
                 "reason": "message alerts disabled (digest only)"}
     if not alert:
         log.info("post-call %s: no message left, no alert", call_id or "?")
@@ -1197,7 +1315,7 @@ def health():
     except Exception:
         call_count = -1
     return {"ok": True,
-            "version": "2026-10-16a",
+            "version": "2026-10-17a",
             "juvonno_configured": bool(JUVONNO_API_KEY and JUVONNO_BASE_URL),
             "branch_code_configured": bool(BRANCH_CODE),
             "calls_logged": call_count,
