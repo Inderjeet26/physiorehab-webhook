@@ -56,6 +56,7 @@ import logging
 import os
 import re
 import smtplib
+import ssl
 import sqlite3
 import threading
 import time
@@ -810,10 +811,20 @@ def _send_email_smtp(to_addrs: list[str], subject: str, body: str) -> int:
     msg["To"] = ", ".join(to_addrs)
     msg.set_content(body)
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as s:
-            s.starttls()
-            s.login(SMTP_USER, SMTP_PASS)
-            s.send_message(msg)
+        if SMTP_PORT == 465:
+            # Implicit TLS from the first byte (e.g. Gmail port 465).
+            # Use this if port 587 connections get dropped on the way.
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20,
+                                  context=context) as s:
+                s.login(SMTP_USER, SMTP_PASS)
+                s.send_message(msg)
+        else:
+            # Plain SMTP upgraded with STARTTLS (e.g. Gmail port 587).
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as s:
+                s.starttls()
+                s.login(SMTP_USER, SMTP_PASS)
+                s.send_message(msg)
     except Exception as e:
         log.warning("SMTP email to %s failed: %s",
                     ", ".join(_mask(a) for a in to_addrs), e)
@@ -1315,7 +1326,7 @@ def health():
     except Exception:
         call_count = -1
     return {"ok": True,
-            "version": "2026-10-17a",
+            "version": "2026-10-18a",
             "juvonno_configured": bool(JUVONNO_API_KEY and JUVONNO_BASE_URL),
             "branch_code_configured": bool(BRANCH_CODE),
             "calls_logged": call_count,
