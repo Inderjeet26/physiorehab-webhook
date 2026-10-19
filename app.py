@@ -810,24 +810,37 @@ def _send_email_smtp(to_addrs: list[str], subject: str, body: str) -> int:
     msg["From"] = SMTP_FROM or SMTP_USER
     msg["To"] = ", ".join(to_addrs)
     msg.set_content(body)
+    stage = "init"
     try:
         if SMTP_PORT == 465:
             # Implicit TLS from the first byte (e.g. Gmail port 465).
-            # Use this if port 587 connections get dropped on the way.
+            stage = "connect_ssl"
             context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20,
-                                  context=context) as s:
-                s.login(SMTP_USER, SMTP_PASS)
-                s.send_message(msg)
+            s = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20,
+                                 context=context)
         else:
             # Plain SMTP upgraded with STARTTLS (e.g. Gmail port 587).
-            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as s:
+            stage = "connect"
+            s = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20)
+        with s:
+            log.info("SMTP %s:%d stage=%s ok (user=%s)",
+                     SMTP_HOST, SMTP_PORT, stage, SMTP_USER)
+            if SMTP_PORT != 465:
+                stage = "starttls"
                 s.starttls()
-                s.login(SMTP_USER, SMTP_PASS)
-                s.send_message(msg)
+                log.info("SMTP %s:%d stage=%s ok", SMTP_HOST, SMTP_PORT, stage)
+            stage = "login"
+            s.login(SMTP_USER, SMTP_PASS)
+            log.info("SMTP %s:%d stage=%s ok (user=%s)",
+                     SMTP_HOST, SMTP_PORT, stage, SMTP_USER)
+            stage = "send_message"
+            s.send_message(msg)
+            log.info("SMTP %s:%d stage=%s ok to %d recipient(s)",
+                     SMTP_HOST, SMTP_PORT, stage, len(to_addrs))
     except Exception as e:
-        log.warning("SMTP email to %s failed: %s",
-                    ", ".join(_mask(a) for a in to_addrs), e)
+        log.warning("SMTP email to %s failed at stage=%s: %s %s",
+                    ", ".join(_mask(a) for a in to_addrs), stage,
+                    type(e).__name__, e)
         return 0
     return len(to_addrs)
 
@@ -1326,7 +1339,7 @@ def health():
     except Exception:
         call_count = -1
     return {"ok": True,
-            "version": "2026-10-18a",
+            "version": "2026-10-18b",
             "juvonno_configured": bool(JUVONNO_API_KEY and JUVONNO_BASE_URL),
             "branch_code_configured": bool(BRANCH_CODE),
             "calls_logged": call_count,
