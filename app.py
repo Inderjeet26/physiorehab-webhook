@@ -493,9 +493,34 @@ def _find_customer_by_phone(client: JuvonnoClient, phone: str,
                             name: str | None = None) -> dict | None:
     """customers/list has no server-side search. Fast path: local phone
     index (verified against Juvonno). Fallback: scan pages client-side,
-    matching across phone/cell/phone2/default_phone_value."""
+    matching across phone/cell/phone2/default_phone_value.
+
+    One number can sit on several patient records (data-entry duplicates).
+    A caller name disambiguates (full "first last", or a first name that
+    matches exactly one record). Without a usable name the lookup raises
+    AmbiguousCustomer instead of silently returning the first record —
+    callers must never be told "no appointments" on a masked collision.
+    """
     norm = _phone_norm(phone)
+    if name:
+        # Name-given lookups always scan: the fast index is 1 phone -> 1
+        # record and cannot represent shared numbers.
+        cands = _scan_customers_by_phone(client, phone)
+        if len(cands) == 1:
+            return cands[0]
+        if len(cands) > 1:
+            _shared_mark(norm, [_candidate_name(c) for c in cands])
+            matched = _match_customer_by_name(cands, name)
+            if matched:
+                return matched
+            raise AmbiguousCustomer([_candidate_name(c) for c in cands])
+        return None
     if norm:
+        # A known-shared number must never resolve to a single record,
+        # even when the fast index has a stale entry for it.
+        shared = _shared_names(norm)
+        if shared:
+            raise AmbiguousCustomer(shared)
         _index_rebuild_if_stale(client)
         cid = _index_lookup(norm)
         if cid:
@@ -509,20 +534,10 @@ def _find_customer_by_phone(client: JuvonnoClient, phone: str,
                          phone)
             except JuvonnoError as e:
                 log.warning("indexed customer fetch failed: %s", e)
-    cands: list[dict] = []
-    try:
-        for c in client.iter_all_customers():
-            fields = [c.get("phone"), c.get("cell"), c.get("phone2"),
-                      c.get("default_phone_value")]
-            if any(_same_phone(str(f or ""), phone) for f in fields):
-                cands.append(c)
-    except JuvonnoError as e:
-        log.warning("customer scan failed: %s", e)
-        return None
-    if name and len(cands) > 1:
-        first = name.strip().split()[0].lower()
-        cands = [c for c in cands
-                 if str(c.get("first_name", "")).lower() == first]
+    cands = _scan_customers_by_phone(client, phone)
+    if len(cands) > 1:
+        _shared_mark(norm, [_candidate_name(c) for c in cands])
+        raise AmbiguousCustomer([_candidate_name(c) for c in cands])
     if cands:
         _index_customer_phones(cands[0])
     return cands[0] if cands else None
@@ -1033,6 +1048,11 @@ def _db() -> sqlite3.Connection:
             customer_id INTEGER NOT NULL,
             name TEXT,
             updated_at TEXT)""")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS shared_phones (
+            phone_norm TEXT PRIMARY KEY,
+            names TEXT NOT NULL,
+            updated_at TEXT)""")
     conn.commit()
     return conn
 
@@ -1071,28 +1091,129 @@ def _phone_norm(phone: str) -> str:
 
 
 def _index_customer_phones(customer: dict) -> None:
-    """Upsert every phone field of one customer record into the index."""
+    """Upsert every phone field of one customer record into the index.
+
+    One number can sit on several patient records (data-entry duplicates).
+    When the index already maps this number to a *different* record, the
+    1:1 mapping can no longer be trusted: the number is remembered as
+    shared (with the record names, for the ambiguity message) and the
+    index row is dropped so the fast path can never mask the collision.
+    """
     try:
         cid = customer.get("id")
         if not cid:
             return
-        name = (f"{customer.get('first_name', '')} "
-                f"{customer.get('last_name', '')}").strip()
+        name = _candidate_name(customer)
         now = datetime.now().isoformat(timespec="seconds")
         conn = _db()
         for f in (customer.get("phone"), customer.get("cell"),
                   customer.get("phone2"),
                   customer.get("default_phone_value")):
             norm = _phone_norm(str(f or ""))
-            if norm:
+            if not norm:
+                continue
+            row = conn.execute(
+                "SELECT customer_id, name FROM customer_phones "
+                "WHERE phone_norm=?", (norm,)).fetchone()
+            if row and int(row[0]) != int(cid):
+                names = sorted({(row[1] or "").strip(), name} - {""})
                 conn.execute(
-                    "INSERT OR REPLACE INTO customer_phones "
-                    "(phone_norm, customer_id, name, updated_at) "
-                    "VALUES (?,?,?,?)", (norm, cid, name, now))
+                    "INSERT OR REPLACE INTO shared_phones "
+                    "(phone_norm, names, updated_at) VALUES (?,?,?)",
+                    (norm, json.dumps(names), now))
+                conn.execute("DELETE FROM customer_phones WHERE phone_norm=?",
+                             (norm,))
+                log.info("phone %s shared by patient records; "
+                         "index entry removed", norm)
+                continue
+            conn.execute(
+                "INSERT OR REPLACE INTO customer_phones "
+                "(phone_norm, customer_id, name, updated_at) "
+                "VALUES (?,?,?,?)", (norm, cid, name, now))
         conn.commit()
         conn.close()
     except Exception as e:
         log.warning("customer index upsert failed: %s", e)
+
+
+class AmbiguousCustomer(Exception):
+    """One phone number matches several Juvonno customer records and the
+    caller's name did not single one out. Carries the candidate record
+    names so the caller can be asked to disambiguate."""
+
+    def __init__(self, candidates: list[str]):
+        super().__init__("; ".join(candidates))
+        self.candidates = candidates
+
+
+def _norm_name(name: str) -> str:
+    return " ".join((name or "").strip().lower().split())
+
+
+def _candidate_name(c: dict) -> str:
+    return (f"{c.get('first_name', '')} "
+            f"{c.get('last_name', '')}").strip()
+
+
+def _match_customer_by_name(cands: list[dict], name: str) -> dict | None:
+    """Pick one record out of several phone matches using the caller's
+    name. A full normalized "first last" match wins; otherwise a first
+    name that matches exactly one record wins. Returns None when the
+    name still doesn't disambiguate."""
+    want = _norm_name(name)
+    if not want:
+        return None
+    for c in cands:
+        if _norm_name(_candidate_name(c)) == want:
+            return c
+    first = want.split()[0]
+    by_first = [c for c in cands
+                if _norm_name(str(c.get("first_name", ""))) == first]
+    return by_first[0] if len(by_first) == 1 else None
+
+
+def _shared_mark(norm: str, names: list[str]) -> None:
+    """Remember a phone number as shared by several patient records."""
+    try:
+        conn = _db()
+        conn.execute(
+            "INSERT OR REPLACE INTO shared_phones "
+            "(phone_norm, names, updated_at) VALUES (?,?,?)",
+            (norm, json.dumps(sorted({n for n in names if n})),
+             datetime.now().isoformat(timespec="seconds")))
+        conn.execute("DELETE FROM customer_phones WHERE phone_norm=?",
+                     (norm,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("shared-phone mark failed: %s", e)
+
+
+def _shared_names(norm: str) -> list[str] | None:
+    """Candidate record names for a known-shared phone, or None."""
+    try:
+        conn = _db()
+        row = conn.execute(
+            "SELECT names FROM shared_phones WHERE phone_norm=?",
+            (norm,)).fetchone()
+        conn.close()
+        return json.loads(row[0]) if row else None
+    except Exception:
+        return None
+
+
+def _scan_customers_by_phone(client, phone: str) -> list[dict]:
+    """Full client-side scan of customers/list for a phone number."""
+    cands: list[dict] = []
+    try:
+        for c in client.iter_all_customers():
+            fields = [c.get("phone"), c.get("cell"), c.get("phone2"),
+                      c.get("default_phone_value")]
+            if any(_same_phone(str(f or ""), phone) for f in fields):
+                cands.append(c)
+    except JuvonnoError as e:
+        log.warning("customer scan failed: %s", e)
+    return cands
 
 
 def _index_lookup(phone_norm: str) -> int | None:
@@ -1339,7 +1460,7 @@ def health():
     except Exception:
         call_count = -1
     return {"ok": True,
-            "version": "2026-10-18b",
+            "version": "2026-10-20a",
             "juvonno_configured": bool(JUVONNO_API_KEY and JUVONNO_BASE_URL),
             "branch_code_configured": bool(BRANCH_CODE),
             "calls_logged": call_count,
@@ -1485,7 +1606,15 @@ async def tool_book_appointment(request: Request,
             return _fail("That slot was just taken. Please pick another time.")
 
         # Find or create the patient.
-        customer = _find_customer_by_phone(client, body.phone, body.name)
+        try:
+            customer = _find_customer_by_phone(client, body.phone, body.name)
+        except AmbiguousCustomer as e:
+            names = ", ".join(e.candidates)
+            return _fail(
+                "That phone number is on more than one patient file "
+                f"({names}). Confirm the caller's full name as spelled in "
+                "our system and try again with the exact name — do not "
+                "create a duplicate record.")
         if not customer:
             if not body.date_of_birth:
                 return _fail(
@@ -1548,7 +1677,19 @@ async def tool_find_appointments(request: Request,
         return _fail(str(e))
     branch_code = _need_branch_code()
     client = _client()
-    customer = _find_customer_by_phone(client, body.phone, body.name)
+    try:
+        customer = _find_customer_by_phone(client, body.phone, body.name)
+    except AmbiguousCustomer as e:
+        names = ", ".join(e.candidates)
+        return _ok({"appointments": [],
+                    "ambiguous": True,
+                    "candidates": e.candidates,
+                    "message": (
+                        "That phone number is on more than one patient file "
+                        f"({names}). Ask the caller for their full name as "
+                        "spelled in our system, then call find_appointments "
+                        "again with the name included. Do not tell the "
+                        "caller they have no appointments.")})
     if not customer:
         return _ok({"appointments": [],
                     "message": "No patient record found for that number."})
