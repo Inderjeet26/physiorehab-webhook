@@ -169,13 +169,13 @@ CLINIC_HOURS = _getenv_json("CLINIC_HOURS_JSON", DEFAULT_HOURS)
 # service key -> (schedule_type_id, default duration minutes)
 # Durations verified live from /api/schedule_types/{id}/products.
 SERVICES = {
-    "physiotherapy":   {"schedule_type_id": 2, "duration": 45},  # Physio Treatment
+    "physiotherapy":   {"schedule_type_id": 2, "duration": 60},  # Physio Treatment (60 min since 2026-10-26 Juvonno change)
     "physio_assessment": {"schedule_type_id": 9, "duration": 60},  # Physio Assessment
-    "mva":             {"schedule_type_id": 2, "duration": 45},  # MVA PhysioTreatment
+    "mva":             {"schedule_type_id": 2, "duration": 60},  # MVA PhysioTreatment (60 min since 2026-10-26)
     "mva_assessment":  {"schedule_type_id": 9, "duration": 60},  # Motor Vehicle Accident Physio
     "mva_reassessment": {"schedule_type_id": 9, "duration": 30},  # MVA Physiotherapy Reassessment
-    "whiplash":        {"schedule_type_id": 2, "duration": 45},
-    "pelvic":          {"schedule_type_id": 2, "duration": 45},  # Pelvic Physio Treatment
+    "whiplash":        {"schedule_type_id": 2, "duration": 60},  # Whiplash (60 min since 2026-10-26)
+    "pelvic":          {"schedule_type_id": 2, "duration": 60},  # Pelvic Physio Treatment (60 min since 2026-10-26)
     "pelvic_assessment": {"schedule_type_id": 9, "duration": 60},  # Pelvic Physio
     "massage":         {"schedule_type_id": 6, "duration": 60},  # 60 Mins Massage Therapy
     "massage_30":      {"schedule_type_id": 6, "duration": 30},
@@ -184,7 +184,7 @@ SERVICES = {
     "prenatal_massage": {"schedule_type_id": 8, "duration": 60},
     "postnatal_massage": {"schedule_type_id": 5, "duration": 60},
     "wsib":            {"schedule_type_id": 2, "duration": 30},  # WSIB Treatment
-    "follow_up":       {"schedule_type_id": 2, "duration": 45},
+    "follow_up":       {"schedule_type_id": 2, "duration": 60},  # Follow-up (60 min since 2026-10-26)
 }
 
 app = FastAPI(title="PhysioRehab Juvonno webhook")
@@ -1460,7 +1460,7 @@ def health():
     except Exception:
         call_count = -1
     return {"ok": True,
-            "version": "2026-10-20a",
+            "version": "2026-10-26a",
             "juvonno_configured": bool(JUVONNO_API_KEY and JUVONNO_BASE_URL),
             "branch_code_configured": bool(BRANCH_CODE),
             "calls_logged": call_count,
