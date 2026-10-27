@@ -663,6 +663,11 @@ class BookIn(BaseModel):
     accident_date: str | None = None
     claim_number: str | None = None
     is_new_patient: bool = True
+    assessment_fallback: bool = Field(False,
+        description="TRUE only when a new-patient assessment is booked into a "
+                    "treatment slot because no assessment slots were open. "
+                    "Flags the booking so staff convert it to Assessment type "
+                    "in Juvonno.")
 
 
 class FindIn(BaseModel):
@@ -1460,7 +1465,7 @@ def health():
     except Exception:
         call_count = -1
     return {"ok": True,
-            "version": "2026-10-26a",
+            "version": "2026-10-26b",
             "juvonno_configured": bool(JUVONNO_API_KEY and JUVONNO_BASE_URL),
             "branch_code_configured": bool(BRANCH_CODE),
             "calls_logged": call_count,
@@ -1637,6 +1642,12 @@ async def tool_book_appointment(request: Request,
 
         memo_parts = [f"Booked by voice agent Aria "
                       f"({'new' if body.is_new_patient else 'returning'} patient)."]
+        if body.assessment_fallback:
+            memo_parts.append(
+                "ASSESSMENT FALLBACK — new patient booked in a treatment slot "
+                "because no assessment slots were open. Staff: please convert "
+                "this appointment to Assessment type in Juvonno and confirm "
+                "the appointment length with the patient.")
         if body.reason:
             memo_parts.append(f"Reason: {body.reason}")
         if body.accident_date or body.claim_number:
@@ -1662,6 +1673,7 @@ async def tool_book_appointment(request: Request,
         "practitioner": _staff_name(matched),
         "start": start_dt.strftime("%A, %B %-d at ") + _fmt_time(start_dt),
         "duration_minutes": duration,
+        "assessment_fallback": bool(body.assessment_fallback),
         "message": "Appointment booked in Juvonno.",
     })
 
