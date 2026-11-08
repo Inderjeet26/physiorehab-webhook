@@ -18,6 +18,11 @@ official OpenAPI spec (api.swaggerhub.com/apis/globaloffice/juvonno):
   - POST /api/customers requires first_name, last_name, date_of_birth, gender
   - GET /api/schedule_types/list ; GET /api/schedule_types/{id}/products
 
+Availability source (2026-11-08): the public booking portal's live
+schedule calendar (portal/publicbook.php), NOT the availability API
+grid — the grid disagrees with the portal (Nov 11 assessment: portal
+17 slots, grid 0). See _availability_slots.
+
 Security: the Juvonno API key lives ONLY here (env var), never in the Retell
 prompt or tool schemas. Optionally gate the endpoints with WEBHOOK_TOKEN.
 
@@ -167,24 +172,37 @@ DEFAULT_HOURS = {
 CLINIC_HOURS = _getenv_json("CLINIC_HOURS_JSON", DEFAULT_HOURS)
 
 # service key -> (schedule_type_id, default duration minutes)
-# Durations verified live from /api/schedule_types/{id}/products.
+# Durations verified against the public booking portal's own behaviour
+# 2026-11-08: assessments 60 min (4 x 15-min slots); Physio Treatment
+# 45 min (3 x 15-min slots); MVA Physio and Pelvic Physio 60 min
+# (4 slots) — verified Nov 10 (both show none where 45 min would show
+# 10:45 am + 2:15 pm) and Pelvic Nov 9 (single 6:15 pm slot). The Oct 26
+# change to 60-min treatment blocks is NOT reflected in the portal's
+# Physio Treatment product duration (still 45).
+# Portal product ids (publicbook.php service list, branch_id=1):
+#   Physio Treatment 87, Physio Assessment 136, MVA Physio 2,
+#   Pelvic Physio 108, 45-min massage 141, 60-min massage 140,
+#   90-min massage 114, 60-min pre-natal 176. The portal has NO
+#   30-min massage, NO postnatal massage, and NO separate MVA/pelvic
+#   assessment products — those services use the closest product for
+#   the portal page URL only; the schedule table does not depend on it.
 SERVICES = {
-    "physiotherapy":   {"schedule_type_id": 2, "duration": 60},  # Physio Treatment (60 min since 2026-10-26 Juvonno change)
-    "physio_assessment": {"schedule_type_id": 9, "duration": 60},  # Physio Assessment
-    "mva":             {"schedule_type_id": 2, "duration": 60},  # MVA PhysioTreatment (60 min since 2026-10-26)
-    "mva_assessment":  {"schedule_type_id": 9, "duration": 60},  # Motor Vehicle Accident Physio
+    "physiotherapy":   {"schedule_type_id": 2, "duration": 45},  # Physio Treatment (portal product 87; 45 min = 3 slots, verified 2026-11-08)
+    "physio_assessment": {"schedule_type_id": 9, "duration": 60},  # Physio Assessment (portal product 136; 60 min = 4 slots, verified 2026-11-08)
+    "mva":             {"schedule_type_id": 2, "duration": 60},  # MVA Physio (portal product 2; 60 min = 4 slots, verified 2026-11-08: Nov 10 shows none)
+    "mva_assessment":  {"schedule_type_id": 9, "duration": 60},  # Motor Vehicle Accident Physio assessment (portal has no separate MVA assessment product; uses 136)
     "mva_reassessment": {"schedule_type_id": 9, "duration": 30},  # MVA Physiotherapy Reassessment
-    "whiplash":        {"schedule_type_id": 2, "duration": 60},  # Whiplash (60 min since 2026-10-26)
-    "pelvic":          {"schedule_type_id": 2, "duration": 60},  # Pelvic Physio Treatment (60 min since 2026-10-26)
-    "pelvic_assessment": {"schedule_type_id": 9, "duration": 60},  # Pelvic Physio
-    "massage":         {"schedule_type_id": 6, "duration": 60},  # 60 Mins Massage Therapy
-    "massage_30":      {"schedule_type_id": 6, "duration": 30},
-    "massage_45":      {"schedule_type_id": 6, "duration": 45},
-    "massage_90":      {"schedule_type_id": 6, "duration": 90},
-    "prenatal_massage": {"schedule_type_id": 8, "duration": 60},
-    "postnatal_massage": {"schedule_type_id": 5, "duration": 60},
+    "whiplash":        {"schedule_type_id": 2, "duration": 60},  # Whiplash (booked under MVA Physio, portal product 2; 60 min = 4 slots, verified 2026-11-08)
+    "pelvic":          {"schedule_type_id": 2, "duration": 60},  # Pelvic Physio (portal product 108; 60 min = 4 slots, verified 2026-11-08: Nov 10 none, Nov 9 single 6:15 pm)
+    "pelvic_assessment": {"schedule_type_id": 9, "duration": 60},  # Pelvic Physio assessment (portal has no separate pelvic assessment product; uses 136)
+    "massage":         {"schedule_type_id": 6, "duration": 60},  # 60 Mins Massage Therapy (portal product 140)
+    "massage_30":      {"schedule_type_id": 6, "duration": 30},  # portal has NO 30-min massage product; page URL uses 140
+    "massage_45":      {"schedule_type_id": 6, "duration": 45},  # 45 Mins Massage Therapy (portal product 141)
+    "massage_90":      {"schedule_type_id": 6, "duration": 90},  # 90 Mins Massage Therapy (portal product 114)
+    "prenatal_massage": {"schedule_type_id": 8, "duration": 60},  # 60 Mins Pre Natal Massage (portal product 176)
+    "postnatal_massage": {"schedule_type_id": 5, "duration": 60},  # portal has NO postnatal product; page URL uses 140
     "wsib":            {"schedule_type_id": 2, "duration": 30},  # WSIB Treatment
-    "follow_up":       {"schedule_type_id": 2, "duration": 60},  # Follow-up (60 min since 2026-10-26)
+    "follow_up":       {"schedule_type_id": 2, "duration": 45},  # Follow-up (booked as Physio Treatment, portal product 87; 45 min = 3 slots)
 }
 
 app = FastAPI(title="PhysioRehab Juvonno webhook")
@@ -362,101 +380,223 @@ def _practitioner_busy(client: JuvonnoClient, branch_code: str,
     return busy
 
 
+# ---- public booking portal (live schedule calendar) -------------------
+# Availability now comes from the Juvonno SCHEDULE — the public booking
+# portal's live schedule calendar — NOT the availability API grid.
+#
+# The portal at {JUVONNO_BASE_URL}/portal/publicbook.php renders each
+# practitioner's day schedule as a table of 15-min points. A point is
+# free iff its div has class `isavailable` (`booked` points also carry
+# data-bookable='1' but an appointment sits there; `noavailability`
+# points are outside the practitioner's working blocks). A start time
+# is offered for a service iff N consecutive free points begin there,
+# N = ceil(duration / 15). Verified exactly against the portal's own
+# displayed times 2026-11-08 (Nov 9-12 physio assessment+treatment,
+# Nov 23 massage; Physio Treatment is 45 min / 3 slots, MVA and Pelvic
+# Physio are 60 min / 4 slots).
+#
+# The table depends on (practitioner, date) only — NOT on the product:
+# the assessment and treatment pages for the same practitioner+day
+# render identical tables. The product_id in the URL only selects
+# which service's page to load; it does not change the table.
+#
+# Date-snap guard: if the requested date has NO free points at all,
+# the portal silently returns the FIRST AVAILABLE date's table
+# instead. The table carries its real date in data-date; if it does
+# not match the requested date, that day has no availability (never
+# offer the other date's times).
+#
+# schedule_type_id -> (portal product_id, portal category_id), used to
+# pick the service page and the practitioner list. The product is only
+# a page selector; the duration (N) is what matters.
+_PORTAL_SERVICE = {
+    2: (87, 5),    # Physio Treatment (portal product 87)
+    9: (136, 5),   # Physio Assessment (portal product 136)
+    6: (140, 2),   # 60 Mins Massage Therapy (portal product 140)
+    8: (176, 2),   # 60 Mins Pre Natal Massage (portal product 176)
+    5: (140, 2),   # postnatal: no portal product; use the massage page
+}
+_PORTAL_SCHEDULE_TYPE_NAMES = {
+    2: "Physiotherapy Treatment",
+    9: "Assessment",
+    6: "Massage Therapy",
+    8: "Prenatal Massage",
+    5: "Postnatal Massage",
+}
+_PORTAL_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+
+def _portal_day_free_points(dr_id: int, day: date_cls,
+                            product_id: int) -> tuple[str, list[int], str]:
+    """Fetch the portal's dateTime page for one practitioner + day.
+
+    Returns (table_date, free_minutes, practitioner_name) where
+    free_minutes is the sorted list of minutes-since-midnight for the
+    `isavailable` 15-min points. Raises JuvonnoError on HTTP error,
+    a missing schedule table, or unparseable content (fail-closed:
+    callers surface a clear error instead of guessing availability)."""
+    url = (f"{JUVONNO_BASE_URL}/portal/publicbook.php?step=dateTime"
+           f"&branch_id={BRANCH_ID}&dr={dr_id}"
+           f"&product_id={product_id}&date={day.isoformat()}")
+    req = urllib.request.Request(url, headers={"User-Agent": _PORTAL_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            if r.status != 200:
+                raise JuvonnoError(
+                    f"portal schedule page returned HTTP {r.status}")
+            html = r.read().decode("utf-8", "replace")
+    except JuvonnoError:
+        raise
+    except Exception as e:
+        raise JuvonnoError(f"portal schedule fetch failed: {e}")
+    m = re.search(
+        r"<div class='table tbl_dr_column'[^>]*data-date='([^']+)'", html)
+    if not m:
+        raise JuvonnoError(
+            "portal schedule table not found — the practitioner may not "
+            "offer this service online, or the portal layout changed")
+    table_date = m.group(1)
+    free: list[int] = []
+    name = ""
+    for sm in re.finditer(r"<div class='trcolschedule([^']*)'[^>]*>", html):
+        if "isavailable" not in sm.group(1):
+            continue
+        tag = sm.group(0)
+        t = re.search(r"data-time_name='([^']+)'", tag)
+        if not t:
+            continue
+        if not name:
+            nm = re.search(r"data-dr_name='([^']+)'", tag)
+            if nm:
+                name = nm.group(1)
+        try:
+            dt = datetime.strptime(t.group(1).strip(), "%I:%M %p")
+        except ValueError:
+            continue
+        free.append(dt.hour * 60 + dt.minute)
+    return table_date, sorted(free), name
+
+
+def _portal_practitioners(product_id: int,
+                          category_id: int) -> list[tuple[int, str]]:
+    """Practitioners offering a portal service, from the portal's own
+    public practitioner-options endpoint. Returns [(dr_id, name)]."""
+    url = (f"{JUVONNO_BASE_URL}/portal/book/book.ajax.php"
+           f"?task=updatePractitionerOptions&branchID={BRANCH_ID}"
+           f"&serviceID={product_id}&categoryID={category_id}")
+    req = urllib.request.Request(url, headers={"User-Agent": _PORTAL_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            if r.status != 200:
+                raise JuvonnoError(
+                    f"portal practitioner list returned HTTP {r.status}")
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except JuvonnoError:
+        raise
+    except Exception as e:
+        raise JuvonnoError(f"portal practitioner list fetch failed: {e}")
+    out: list[tuple[int, str]] = []
+    if isinstance(data, list):
+        for p in data:
+            if not isinstance(p, dict):
+                continue
+            try:
+                out.append((int(p.get("id")), str(p.get("name") or "")))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _portal_dr_id(client: JuvonnoClient,
+                  practitioner_num: str | None
+                  ) -> tuple[int | None, str | None, str | None]:
+    """Resolve a staff num (e.g. 'NavdeepBajaj') or a numeric staff id
+    to the portal's practitioner (dr) id. Returns (dr_id, staff_num,
+    name), or (None, None, None) when it cannot be resolved. The
+    API staff id and the portal dr id are the same number (verified
+    live 2026-11-08: Navdeep 3, Sukhvinder 14, Priyanka 15,
+    Komalpreet 16)."""
+    if practitioner_num is None:
+        return None, None, None
+    s = str(practitioner_num).strip()
+    if s.isdigit():
+        return int(s), s, ""
+    try:
+        matched, _ = _resolve_staff(client, s)
+    except Exception as e:
+        log.warning("staff resolution failed for %r: %s", s, e)
+        return None, None, None
+    if not matched:
+        return None, None, None
+    try:
+        dr_id = int(matched.get("id"))
+    except (TypeError, ValueError):
+        return None, None, None
+    return dr_id, _staff_num(matched), _staff_name(matched)
+
+
 def _availability_slots(client: JuvonnoClient, branch_code: str,
                         day: date_cls, schedule_type_id: int,
                         practitioner_num: str | None = None,
                         duration_min: int = 15,
                         now: datetime | None = None) -> list[dict]:
-    """Real per-staff slot grid from
-    GET /api/appointments/availability/{branchCode}?start_date&end_date.
+    """Availability from the Juvonno SCHEDULE — the public booking
+    portal's live schedule calendar — NOT the availability grid.
 
-    Verified live shape (2026-09-24):
-      {"list": [{"staff": {"id","num","first_name","last_name"},
-                 "slots": {"YYYY-MM-DD": [{"available": bool,
-                    "time": {"time": "10:00", "meridiem": "am", "interval": 15},
-                    "schedule_type": {"id","code","name"}}]}}],
-       "status": 200}
-    Only start times whose schedule_type matches the requested service AND
-    which have enough contiguous available intervals to cover the service's
-    full duration (same staff, same schedule type) are returned, so Aria
-    never offers a start whose tail end is unavailable. Caller must still
-    double-check at booking time."""
+    The availability API grid disagrees with the portal's schedule
+    (verified 2026-11-08, same practitioner, same days, minutes
+    apart: Nov 11 assessment — portal 17 slots, grid 0; Nov 9
+    assessment — portal 2, grid 8 at different times). The portal is
+    what patients see and book from, so it is the source of truth.
+    A start is offered iff N consecutive free 15-min points begin
+    there (N = ceil(duration / 15)); the table already reflects real
+    bookings, so no separate appointments-list filter is needed.
+    On portal fetch/parse failure this raises JuvonnoError (callers
+    return a clean failure) instead of falling back to the grid.
+    `client` is used only to resolve the practitioner num to a portal
+    dr id; `branch_code` is unused (the portal uses BRANCH_ID)."""
     now = now or datetime.now()
-    raw = client.get_availability(branch_code,
-                                  start_date=day.strftime("%Y-%m-%d"),
-                                  end_date=day.strftime("%Y-%m-%d"))
-    entries = raw.get("list") if isinstance(raw, dict) else []
-    if not isinstance(entries, list):
-        entries = []
-    day_key = day.strftime("%Y-%m-%d")
+    product_id, category_id = _PORTAL_SERVICE.get(
+        schedule_type_id, (87, 5))
+    st_name = _PORTAL_SCHEDULE_TYPE_NAMES.get(schedule_type_id, "")
+    needed = max(1, -(-duration_min // 15))  # ceil div
+    # Resolve which practitioner(s) to check.
+    practitioners: list[tuple[int, str, str]] = []  # (dr_id, num, name)
+    if practitioner_num is not None:
+        dr_id, num, name = _portal_dr_id(client, practitioner_num)
+        if dr_id is None:
+            return []  # unknown practitioner: no slots (as before)
+        practitioners.append((dr_id, num or str(dr_id), name))
+    else:
+        for dr_id, pname in _portal_practitioners(product_id, category_id):
+            practitioners.append((dr_id, str(dr_id), pname))
     slots: list[dict] = []
-    # Overlap guard: the grid does not reflect real bookings, so filter
-    # every candidate start against the practitioner's real appointments.
-    # On lookup failure, fall back to grid-only rather than failing the
-    # whole availability check; _slot_free re-checks at booking time.
-    try:
-        busy_by_staff = _practitioner_busy(client, branch_code, day)
-    except Exception as e:
-        log.warning("busy-interval lookup failed, using grid only: %s", e)
-        busy_by_staff = {}
-    for entry in entries:
-        staff = entry.get("staff") or {}
-        if practitioner_num and str(staff.get("num") or "") != practitioner_num:
+    for dr_id, num, pname in practitioners:
+        table_date, free, table_name = _portal_day_free_points(
+            dr_id, day, product_id)
+        if table_date != day.isoformat():
+            # Portal snapped to the first available date: this day has
+            # no free points at all. Never offer the other date's times.
+            log.info("portal date snap: asked %s, table is %s (dr %s)",
+                     day.isoformat(), table_date, dr_id)
             continue
-        name = f"{staff.get('first_name', '')} {staff.get('last_name', '')}".strip()
-        staff_busy = busy_by_staff.get(str(staff.get("num") or ""), [])
-        # Sorted per-staff grid points: (start, step_min, schedule_type_id,
-        # available, schedule_type_name)
-        points: list[tuple[datetime, int, int, bool, str]] = []
-        for s in (entry.get("slots") or {}).get(day_key, []):
-            t = s.get("time") or {}
-            try:
-                step = int(t.get("interval") or 15)
-            except (TypeError, ValueError):
-                step = 15
-            try:
-                start = date_parser.parse(
-                    f"{day_key} {t.get('time', '')} {t.get('meridiem', '')}")
-            except Exception:
+        name = table_name or pname
+        free_set = set(free)
+        for m in free:
+            if not all((m + 15 * k) in free_set for k in range(needed)):
                 continue
-            st = s.get("schedule_type") or {}
-            try:
-                st_id = int(st.get("id") or 0)
-            except (TypeError, ValueError):
-                st_id = 0
-            points.append((start, step, st_id, bool(s.get("available")),
-                           str(st.get("name") or "")))
-        points.sort(key=lambda p: p[0])
-        for i, (start, step, st_id, available, st_name) in enumerate(points):
-            if not available or st_id != schedule_type_id or start <= now:
-                continue
-            needed = max(1, -(-duration_min // step))  # ceil div
-            ok = True
-            for j in range(1, needed):
-                if i + j >= len(points):
-                    ok = False
-                    break
-                nxt_start, nxt_step, nxt_st, nxt_avail, _ = points[i + j]
-                if (not nxt_avail or nxt_st != schedule_type_id
-                        or nxt_start != start + timedelta(minutes=j * step)):
-                    ok = False
-                    break
-            if not ok:
-                continue
-            end = start + timedelta(minutes=duration_min)
-            # Real-appointment overlap: never offer a start whose
-            # [start, end) overlaps this practitioner's existing
-            # booking. Back-to-back is fine (10-11 then 11-12).
-            if any(_overlaps(start, end, b[0], b[1])
-                   for b in staff_busy):
+            start = datetime(day.year, day.month, day.day,
+                             m // 60, m % 60)
+            if start <= now:
                 continue
             slots.append({
                 "start": start.strftime("%Y-%m-%d %H:%M"),
                 "start_display": (start.strftime("%A, %B %-d at ")
                                   + _fmt_time(start)),
                 "practitioner": name,
-                "practitioner_id": staff.get("id"),
-                "practitioner_num": staff.get("num"),
+                "practitioner_id": dr_id,
+                "practitioner_num": num,
                 "schedule_type": st_name,
             })
     slots.sort(key=lambda x: x["start"])
@@ -625,13 +765,24 @@ def _slot_free(client: JuvonnoClient, branch_code: str,
                start_dt: datetime, duration_min: int,
                staff_num: str, schedule_type_id: int,
                exclude_appt_id: int | None = None) -> bool:
-    """Double-booking guard: re-verify the exact slot against Juvonno's live
-    availability grid just before booking."""
-    slots = _availability_slots(client, branch_code, start_dt.date(),
-                                schedule_type_id, staff_num, duration_min,
-                                now=datetime.now())
-    target = start_dt.strftime("%Y-%m-%d %H:%M")
-    return any(s["start"] == target for s in slots)
+    """Double-booking guard: re-verify the exact slot against the
+    portal's live schedule table just before booking. Raises
+    JuvonnoError if the portal cannot be read (fail-closed: the
+    caller refuses the booking instead of booking blind)."""
+    dr_id, _, _ = _portal_dr_id(client, staff_num)
+    if dr_id is None:
+        return False
+    product_id, _ = _PORTAL_SERVICE.get(schedule_type_id, (87, 5))
+    table_date, free, _ = _portal_day_free_points(
+        dr_id, start_dt.date(), product_id)
+    if table_date != start_dt.date().isoformat():
+        return False
+    needed = max(1, -(-duration_min // 15))
+    m = start_dt.hour * 60 + start_dt.minute
+    free_set = set(free)
+    return (start_dt > datetime.now()
+            and all((m + 15 * k) in free_set for k in range(needed)))
+
 
 
 # ---------------------------------------------------------------- models ---
@@ -1465,7 +1616,7 @@ def health():
     except Exception:
         call_count = -1
     return {"ok": True,
-            "version": "2026-10-26b",
+            "version": "2026-11-08",
             "juvonno_configured": bool(JUVONNO_API_KEY and JUVONNO_BASE_URL),
             "branch_code_configured": bool(BRANCH_CODE),
             "calls_logged": call_count,
