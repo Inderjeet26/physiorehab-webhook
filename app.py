@@ -23,6 +23,11 @@ schedule calendar (portal/publicbook.php), NOT the availability API
 grid — the grid disagrees with the portal (Nov 11 assessment: portal
 17 slots, grid 0). See _availability_slots.
 
+Guardrails (2026-11-08-guardrails): per-phone upcoming-appointment cap,
+patient-level overlap check, caller-name identity check on reschedule /
+cancel (and on find_appointments when a name is given), and a per-phone
+rate limit on booking mutations. See GUARDRAILS-2026-11-08.md.
+
 Security: the Juvonno API key lives ONLY here (env var), never in the Retell
 prompt or tool schemas. Optionally gate the endpoints with WEBHOOK_TOKEN.
 
@@ -36,6 +41,7 @@ Env:
   WEBHOOK_TOKEN        (optional shared secret for the tool endpoints)
   CLINIC_HOURS_JSON    (optional override of default clinic hours)
   SLOT_STEP_MINUTES    (default 15)   MAX_SLOTS_RETURNED (default 8)
+  MAX_UPCOMING_PER_PHONE (default 6)  RATE_LIMIT_MUTATION_PER_HOUR (default 10)
 
 Staff message alerts (Retell post-call webhook -> SMS + email):
   ALERT_SMS_TO         (default +16474904541, comma-separated for more)
@@ -110,7 +116,28 @@ WEBHOOK_TOKEN = _getenv("WEBHOOK_TOKEN")
 CLINIC_TIMEZONE = _getenv("CLINIC_TIMEZONE", "America/Toronto")
 SLOT_STEP_MINUTES = int(_getenv("SLOT_STEP_MINUTES", "15"))
 MAX_SLOTS_RETURNED = int(_getenv("MAX_SLOTS_RETURNED", "8"))
+MAX_UPCOMING_PER_PHONE = int(_getenv("MAX_UPCOMING_PER_PHONE", "6"))
+RATE_LIMIT_MUTATION_PER_HOUR = int(
+    _getenv("RATE_LIMIT_MUTATION_PER_HOUR", "10"))
 LOOKAHEAD_DAYS = int(_getenv("LOOKAHEAD_DAYS", "14"))
+
+# ---- misuse guardrails: in-memory rate limiting ----
+# Fixed-window counters, keyed by normalized phone (book) or appointment id
+# (reschedule/cancel). In-memory only: counters reset if the process
+# restarts. Limits are generous for legitimate callers; they only stop
+# one number hammering the booking tools.
+_RATE_BUCKETS: dict[str, list[float]] = {}
+
+
+def _rate_limit_ok(key: str, limit: int, window_seconds: int = 3600) -> bool:
+    """Return True and record the attempt if under the limit, else False."""
+    now = time.time()
+    bucket = _RATE_BUCKETS.setdefault(key, [])
+    bucket[:] = [t for t in bucket if now - t < window_seconds]
+    if len(bucket) >= limit:
+        return False
+    bucket.append(now)
+    return True
 
 # ---- staff message alerts (Retell post-call webhook -> SMS + email) ----
 # Destinations: SMS goes to the clinic number, email to the clinic inbox.
@@ -731,6 +758,37 @@ def _busy_intervals(client: JuvonnoClient, branch_code: str,
     return busy
 
 
+def _upcoming_appts_for_customer(client: JuvonnoClient, branch_code: str,
+                                 customer_id: int
+                                 ) -> list[tuple[dict, datetime, datetime]]:
+    """Upcoming (not cancelled) appointments for one patient, as
+    (appointment, start, end) with start/end as naive America/Toronto
+    datetimes so they compare cleanly with parsed slot times."""
+    tz = ZoneInfo(CLINIC_TIMEZONE)
+    now = datetime.now(tz)
+    appts = _list_appts_in_range(
+        client, branch_code,
+        now.strftime("%Y-%m-%d"),
+        (now + timedelta(days=90)).strftime("%Y-%m-%d"))
+    out: list[tuple[dict, datetime, datetime]] = []
+    for a in appts:
+        if _appt_customer_id(a) != customer_id:
+            continue
+        if (a.get("status") or "").lower() in _CANCELLED_STATUSES:
+            continue
+        s, e = _appt_datetime(a)
+        if not s or not e:
+            continue
+        if s.tzinfo is not None:
+            s = s.astimezone(tz).replace(tzinfo=None)
+        if e.tzinfo is not None:
+            e = e.astimezone(tz).replace(tzinfo=None)
+        if s < now.replace(tzinfo=None):
+            continue
+        out.append((a, s, e))
+    return out
+
+
 def _compute_slots(day: date_cls, staff_member: dict,
                    busy: list[tuple[datetime, datetime]],
                    duration_min: int, now: datetime) -> list[dict]:
@@ -829,10 +887,22 @@ class FindIn(BaseModel):
 class RescheduleIn(BaseModel):
     appointment_id: int
     new_start: str = Field(..., description="'YYYY-MM-DD HH:MM' (24h)")
+    caller_name: str | None = Field(
+        None,
+        description="Caller's full name — REQUIRED for the identity check: "
+                    "it must match the patient on this appointment.")
+    phone: str | None = Field(
+        None, description="Caller's phone number (for rate limiting).")
 
 
 class CancelIn(BaseModel):
     appointment_id: int
+    caller_name: str | None = Field(
+        None,
+        description="Caller's full name — REQUIRED for the identity check: "
+                    "it must match the patient on this appointment.")
+    phone: str | None = Field(
+        None, description="Caller's phone number (for rate limiting).")
 
 
 def _ok(data: dict) -> dict:
@@ -1328,6 +1398,36 @@ def _match_customer_by_name(cands: list[dict], name: str) -> dict | None:
     return by_first[0] if len(by_first) == 1 else None
 
 
+def _name_matches_customer(caller_name: str | None,
+                           customer: dict | None) -> bool:
+    """Does the caller's name match this patient record? Full normalized
+    "first last" wins; otherwise a first-name match wins (same leniency as
+    _match_customer_by_name). Used to verify identity before changing or
+    cancelling someone's booking."""
+    if not caller_name or not customer:
+        return False
+    want = _norm_name(caller_name)
+    if not want:
+        return False
+    if _norm_name(_candidate_name(customer)) == want:
+        return True
+    return (_norm_name(str(customer.get("first_name", "")))
+            == want.split()[0])
+
+
+def _appt_customer_record(client: JuvonnoClient, appt: dict) -> dict | None:
+    """Fetch the patient record for an appointment (via its customer id).
+    Returns None when the appointment has no usable customer id or the
+    fetch fails — callers treat that as 'cannot verify identity'."""
+    cid = _appt_customer_id(appt)
+    if not cid:
+        return None
+    try:
+        return client.get_customer(cid)
+    except JuvonnoError:
+        return None
+
+
 def _shared_mark(norm: str, names: list[str]) -> None:
     """Remember a phone number as shared by several patient records."""
     try:
@@ -1616,7 +1716,7 @@ def health():
     except Exception:
         call_count = -1
     return {"ok": True,
-            "version": "2026-11-08",
+            "version": "2026-11-08-guardrails",
             "juvonno_configured": bool(JUVONNO_API_KEY and JUVONNO_BASE_URL),
             "branch_code_configured": bool(BRANCH_CODE),
             "calls_logged": call_count,
@@ -1730,6 +1830,11 @@ async def tool_book_appointment(request: Request,
         return _fail(str(e))
     branch_code = _need_branch_code()
     client = _client()
+    # --- Guardrail: rate-limit booking attempts per phone. ---
+    _rl_key = f"book:{_phone_norm(body.phone) or 'unknown'}"
+    if not _rate_limit_ok(_rl_key, RATE_LIMIT_MUTATION_PER_HOUR):
+        return _fail("Too many booking attempts from this number. "
+                     "Please try again later, or have staff help.")
     try:
         start_dt = _parse_dt(body.start)
     except Exception:
@@ -1790,6 +1895,24 @@ async def tool_book_appointment(request: Request,
         if not customer_id:
             return _fail("Couldn't identify the patient record in Juvonno.")
         _index_customer_phones(customer)  # keep the phone index warm
+
+        # --- Guardrails: per-phone upcoming cap + patient overlap. ---
+        upcoming = _upcoming_appts_for_customer(
+            client, branch_code, int(customer_id))
+        if len(upcoming) >= MAX_UPCOMING_PER_PHONE:
+            return _fail(
+                f"This patient already has {len(upcoming)} upcoming "
+                "appointment(s). We can only hold "
+                f"{MAX_UPCOMING_PER_PHONE} upcoming appointments per "
+                "patient. Please have staff help, or cancel an existing "
+                "appointment first.")
+        end_dt = start_dt + timedelta(minutes=duration)
+        for _a, _s, _e in upcoming:
+            if _overlaps(_s, _e, start_dt, end_dt):
+                return _fail(
+                    "This patient already has an appointment at that time "
+                    f"({_s.strftime('%A, %B %-d at ')}{_fmt_time(_s)}). "
+                    "Please pick a different time.")
 
         memo_parts = [f"Booked by voice agent Aria "
                       f"({'new' if body.is_new_patient else 'returning'} patient)."]
@@ -1856,6 +1979,13 @@ async def tool_find_appointments(request: Request,
     if not customer:
         return _ok({"appointments": [],
                     "message": "No patient record found for that number."})
+    # --- Guardrail: if the caller gave a name, it must match the patient
+    # on file for this number — otherwise reveal nothing. ---
+    if body.name and not _name_matches_customer(body.name, customer):
+        return _ok({"appointments": [],
+                    "message": ("I couldn't confirm that name for this phone "
+                                "number. Please confirm the caller's full name "
+                                "as spelled in our system and try again.")})
     cid = customer.get("id")
     try:
         # Juvonno returns tz-aware ISO timestamps; compare against an
@@ -1910,6 +2040,11 @@ async def tool_reschedule_appointment(request: Request,
         return _fail(str(e))
     branch_code = _need_branch_code()
     client = _client()
+    # --- Guardrail: rate-limit reschedule attempts. ---
+    _rl_key = (f"reschedule:{_phone_norm(body.phone)}"
+               if body.phone else f"reschedule:appt-{body.appointment_id}")
+    if not _rate_limit_ok(_rl_key, RATE_LIMIT_MUTATION_PER_HOUR):
+        return _fail("Too many reschedule attempts. Please try again later.")
     try:
         new_start = _parse_dt(body.new_start)
     except Exception:
@@ -1922,6 +2057,17 @@ async def tool_reschedule_appointment(request: Request,
     except JuvonnoError as e:
         return _fail(f"Couldn't find appointment "
                      f"#{body.appointment_id}: {e}")
+    # --- Guardrail: identity check — the caller's name must match the
+    # patient on this appointment. ---
+    if not body.caller_name:
+        return _fail("Please confirm the caller's full name first, then "
+                     "try rescheduling again.")
+    _appt_customer = _appt_customer_record(client, appt)
+    if (not _appt_customer
+            or not _name_matches_customer(body.caller_name, _appt_customer)):
+        return _fail("I couldn't confirm that this appointment belongs to "
+                     "the caller. Please confirm the caller's full name as "
+                     "spelled in our system, or have staff help.")
     s_old, e_old = _appt_datetime(appt)
     duration = (int((e_old - s_old).total_seconds() // 60)
                 if s_old and e_old else 45)
@@ -1966,6 +2112,27 @@ async def tool_cancel_appointment(request: Request,
     except ValueError as e:
         return _fail(str(e))
     client = _client()
+    # --- Guardrail: rate-limit cancel attempts. ---
+    _rl_key = (f"cancel:{_phone_norm(body.phone)}"
+               if body.phone else f"cancel:appt-{body.appointment_id}")
+    if not _rate_limit_ok(_rl_key, RATE_LIMIT_MUTATION_PER_HOUR):
+        return _fail("Too many cancel attempts. Please try again later.")
+    # --- Guardrail: identity check — the caller's name must match the
+    # patient on this appointment. ---
+    if not body.caller_name:
+        return _fail("Please confirm the caller's full name first, then "
+                     "try cancelling again.")
+    try:
+        _appt = client.get_appointment(body.appointment_id)
+    except JuvonnoError as e:
+        return _fail(f"Couldn't find appointment "
+                     f"#{body.appointment_id}: {e}")
+    _appt_customer = _appt_customer_record(client, _appt)
+    if (not _appt_customer
+            or not _name_matches_customer(body.caller_name, _appt_customer)):
+        return _fail("I couldn't confirm that this appointment belongs to "
+                     "the caller. Please confirm the caller's full name as "
+                     "spelled in our system, or have staff help.")
     # The exact "cancel" status string is not in Juvonno's public docs
     # (active appointments show status "open"). Juvonno validates strictly
     # and rejects unknown statuses with a 400 that changes nothing, so we
