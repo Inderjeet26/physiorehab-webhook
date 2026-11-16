@@ -28,6 +28,13 @@ patient-level overlap check, caller-name identity check on reschedule /
 cancel (and on find_appointments when a name is given), and a per-phone
 rate limit on booking mutations. See GUARDRAILS-2026-11-08.md.
 
+Alerts (2026-11-16-alerts): instant message alerts are ON (Inder, Nov 16
+— every callback message emails staff immediately). Plus a general-enquiry
+alert: a real caller conversation that is not a message, a booking failure
+or a completed booking (e.g. a pricing / availability enquiry) also emails
+staff. Pure hang-ups — no message, no reason, no tools, caller said
+nothing — are skipped, so staff are not spammed with empty calls.
+
 Security: the Juvonno API key lives ONLY here (env var), never in the Retell
 prompt or tool schemas. Optionally gate the endpoints with WEBHOOK_TOKEN.
 
@@ -157,10 +164,12 @@ SMTP_FROM = _getenv("SMTP_FROM", "Aria <info@physiorehabcenter.com>")
 # Raw Retell API key: used ONLY to verify the x-retell-signature header on
 # the post-call webhook. Never sent anywhere else.
 RETELL_API_KEY = _getenv("RETELL_API_KEY")
-# ---- instant message alerts (currently OFF — digest only) ----
-# Set ENABLE_MESSAGE_ALERTS=1 to also text/email staff the moment a caller
-# leaves a message. Default off: Inder chose the end-of-day digest only.
-ENABLE_MESSAGE_ALERTS = _getenv("ENABLE_MESSAGE_ALERTS", "0") == "1"
+# ---- instant message alerts (ON — Inder, 2026-11-16) ----
+# Text/email staff the moment a caller leaves a message. Default on;
+# set ENABLE_MESSAGE_ALERTS=0 to go back to digest-only. (Previously
+# digest-only per Inder 2026-09-24; turned on 2026-11-16 because callback
+# messages were reaching nobody — the 8 PM digest was never scheduled.)
+ENABLE_MESSAGE_ALERTS = _getenv("ENABLE_MESSAGE_ALERTS", "1") == "1"
 
 # ---- instant booking-failure alerts (ON by default) ----
 # A caller who wanted to book but was NOT booked in Juvonno must reach
@@ -177,6 +186,16 @@ ENABLE_BOOKING_FAILURE_ALERTS = _getenv(
 # ENABLE_BOOKING_COMPLETED_ALERTS=0 to turn these off.
 ENABLE_BOOKING_COMPLETED_ALERTS = _getenv(
     "ENABLE_BOOKING_COMPLETED_ALERTS", "1") == "1"
+
+# ---- instant general-enquiry alerts (ON by default) ----
+# A caller who had a real conversation (pricing, availability, services)
+# but did not book, did not fail a booking and did not leave a message
+# still reaches staff by email. Pure hang-ups (no message, no reason,
+# no tools, caller said nothing) are skipped. Set
+# ENABLE_GENERAL_ENQUIRY_ALERTS=0 to turn these off.
+# (2026-11-16: Inder — alert on everything except zero-content hang-ups.)
+ENABLE_GENERAL_ENQUIRY_ALERTS = _getenv(
+    "ENABLE_GENERAL_ENQUIRY_ALERTS", "1") == "1"
 
 # Only process post-call events for Aria's agent (empty = accept any agent).
 ALERT_AGENT_ID = _getenv("ALERT_AGENT_ID", "agent_bd831504019513a74e71f83d2d")
@@ -1250,6 +1269,78 @@ def _extract_booking_completed_alert(call: dict) -> dict | None:
     }
 
 
+def _extract_general_enquiry_alert(call: dict) -> dict | None:
+    """Build a staff email for a real caller conversation that is NOT a
+    message, a booking failure, or a completed booking — e.g. a pricing
+    or availability enquiry. Fires when the caller actually engaged (a
+    reason was recorded, a tool was called, or the caller spoke) but left
+    no message and did not ask to book. Pure hang-ups — no message, no
+    reason, no tools, caller said nothing — return None so staff are not
+    spammed with empty calls.
+    (2026-11-16: Inder — alert on everything except hang-ups with zero
+    content.)"""
+    analysis = call.get("call_analysis") or {}
+    custom = analysis.get("custom_analysis_data") or {}
+    # A specific alert already covers these — never double-email.
+    if str(custom.get("message_for_staff") or "").strip():
+        return None
+    if _truthy(custom.get("booking_requested")):
+        return None
+    if _truthy(custom.get("booking_completed")):
+        return None
+    reason = str(custom.get("reason_for_call") or "").strip()
+    # Did the caller actually engage? Any one of: a recorded reason,
+    # a tool call (availability / pricing lookup), or the caller speaking.
+    engaged = bool(reason)
+    if not engaged:
+        tools = call.get("tool_calls") or []
+        if isinstance(tools, list) and len(tools) > 0:
+            engaged = True
+    if not engaged:
+        transcript = (call.get("transcript_object")
+                      or call.get("transcript") or [])
+        if isinstance(transcript, list):
+            for turn in transcript:
+                if isinstance(turn, dict) and turn.get("role") == "user":
+                    if str(turn.get("content") or "").strip():
+                        engaged = True
+                        break
+    if not engaged:
+        return None
+    caller_name = str(custom.get("caller_name") or "").strip() or "Unknown"
+    callback = str(custom.get("callback_number")
+                   or call.get("from_number") or "").strip()
+    summary = str(analysis.get("call_summary") or "").strip()
+    start_ts = call.get("start_timestamp")
+    try:
+        call_time = (datetime.fromtimestamp(int(start_ts) / 1000)
+                     .strftime("%Y-%m-%d %I:%M %p")) if start_ts else "unknown"
+    except (TypeError, ValueError):
+        call_time = "unknown"
+    lines = [
+        "A caller spoke with Aria but did not book and did not leave a "
+        "message.",
+        "",
+        f"From: {caller_name}",
+        f"Callback: {callback or 'not provided'}",
+        f"Call time: {call_time}",
+        f"Reason for calling: {reason or 'not recorded'}",
+        "",
+        "Please call them back if they need anything.",
+    ]
+    if summary:
+        lines += ["", "Call summary:", summary]
+    recording = call.get("recording_url")
+    if recording:
+        lines += ["", f"Recording: {recording}"]
+    subject_name = (caller_name if caller_name != "Unknown"
+                    else (reason or "caller"))
+    return {
+        "email_subject": f"[Aria] Caller enquiry — {subject_name}",
+        "email_body": "\n".join(lines),
+    }
+
+
 # ------------------------------------------------- call log + digest --
 # Every analyzed call is logged to SQLite so the daily digest can list all
 # calls received (time, caller name, phone, summary) as a callback list
@@ -1647,6 +1738,20 @@ async def retell_post_call(request: Request,
         completed_sent = email_n > 0
         log.info("post-call %s: booking-completed alert email=%d",
                  call_id or "?", email_n)
+    # General-enquiry alert: a real conversation that is not a message,
+    # booking failure, or completed booking (e.g. pricing / availability
+    # enquiry). Fires only when no specific alert was produced, so a call
+    # never emails twice for the same reason. Pure hang-ups are skipped
+    # inside _extract_general_enquiry_alert.
+    general_alert = _extract_general_enquiry_alert(call)
+    general_sent = False
+    if general_alert and ENABLE_GENERAL_ENQUIRY_ALERTS:
+        email_n = _send_email_smtp(ALERT_EMAIL_TO,
+                                   general_alert["email_subject"],
+                                   general_alert["email_body"])
+        general_sent = email_n > 0
+        log.info("post-call %s: general-enquiry alert email=%d",
+                 call_id or "?", email_n)
     if not ENABLE_MESSAGE_ALERTS:
         # Digest-only mode: log the call, skip instant message alerts.
         # (Booking alerts above still fire — separate flags.)
@@ -1716,7 +1821,7 @@ def health():
     except Exception:
         call_count = -1
     return {"ok": True,
-            "version": "2026-11-08-guardrails",
+            "version": "2026-11-16-alerts",
             "juvonno_configured": bool(JUVONNO_API_KEY and JUVONNO_BASE_URL),
             "branch_code_configured": bool(BRANCH_CODE),
             "calls_logged": call_count,
