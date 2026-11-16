@@ -1,0 +1,137 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//PhysioRehab Center//PRC Post Calendar//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:PhysioRehab Posts — Nov 2026
+X-WR-TIMEZONE:America/Toronto
+BEGIN:VTIMEZONE
+TZID:America/Toronto
+BEGIN:STANDARD
+DTSTART:19701101T020000
+RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU
+TZOFFSETFROM:-0400
+TZOFFSETTO:-0500
+TZNAME:EST
+END:STANDARD
+BEGIN:DAYLIGHT
+DTSTART:19700308T020000
+RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU
+TZOFFSETFROM:-0500
+TZOFFSETTO:-0400
+TZNAME:EDT
+END:DAYLIGHT
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:prc-post-20261102@physiorehabcenter
+DTSTAMP:20261116T190737Z
+DTSTART;TZID=America/Toronto:20261102T100000
+DTEND;TZID=America/Toronto:20261102T103000
+SUMMARY:✅ PRC Post: Review Spotlight v3 carousel (published)
+DESCRIPTION:Carousel — 5.0 · 238 Google reviews. Published on Facebook\,
+  Instagram\, and Google Business Profile at 10 AM ET.
+END:VEVENT
+BEGIN:VEVENT
+UID:prc-post-20261104@physiorehabcenter
+DTSTAMP:20261116T190737Z
+DTSTART;TZID=America/Toronto:20261104T100000
+DTEND;TZID=America/Toronto:20261104T103000
+SUMMARY:✅ PRC Post: Pelvic carousel (published)
+DESCRIPTION:Published on Facebook\, Instagram\, and Google Business Profile
+  (late\, 11:33 AM ET).
+END:VEVENT
+BEGIN:VEVENT
+UID:prc-post-20261106@physiorehabcenter
+DTSTAMP:20261116T190737Z
+DTSTART;TZID=America/Toronto:20261106T100000
+DTEND;TZID=America/Toronto:20261106T103000
+SUMMARY:✅ PRC Post: 5 Signs carousel (published)
+DESCRIPTION:Published on Facebook\, Instagram\, and Google Business Profile
+ .
+END:VEVENT
+BEGIN:VEVENT
+UID:prc-post-20261109@physiorehabcenter
+DTSTAMP:20261116T190737Z
+DTSTART;TZID=America/Toronto:20261109T100000
+DTEND;TZID=America/Toronto:20261109T103000
+SUMMARY:✅ PRC Post: MVA Reel (published FB + IG)
+DESCRIPTION:Published on Facebook and Instagram at 10 AM ET. Google Busines
+ s Profile publish unverified.
+END:VEVENT
+BEGIN:VEVENT
+UID:prc-post-20261111@physiorehabcenter
+DTSTAMP:20261116T190737Z
+DTSTART;TZID=America/Toronto:20261111T100000
+DTEND;TZID=America/Toronto:20261111T103000
+SUMMARY:❌ PRC Post: Nov 11 slot (missed)
+DESCRIPTION:No post went out — copy was unapproved that morning\, so noth
+ ing was scheduled.
+END:VEVENT
+BEGIN:VEVENT
+UID:prc-post-20261113@physiorehabcenter
+DTSTAMP:20261116T190737Z
+DTSTART;TZID=America/Toronto:20261113T100000
+DTEND;TZID=America/Toronto:20261113T103000
+SUMMARY:✅ PRC Post: Massage Reel V6 (published FB + IG)
+DESCRIPTION:Published on Facebook and Instagram at 10 AM ET. Google Busines
+ s Profile publish unverified. Shared to Instagram Story ~3:01 PM ET (expir
+ ed Nov 14 ~3:01 PM).
+END:VEVENT
+BEGIN:VEVENT
+UID:prc-post-20261116@physiorehabcenter
+DTSTAMP:20261116T190737Z
+DTSTART;TZID=America/Toronto:20261116T100000
+DTEND;TZID=America/Toronto:20261116T103000
+SUMMARY:❌ PRC Post: Construction persona (missed — unscheduled)
+DESCRIPTION:10 AM slot passed with nothing posted. Video V3 final ready\, c
+ opy approved Nov 8. Scheduling go-ahead still missing. Construction: 'Lift
+  with your legs\, not your back.'
+END:VEVENT
+BEGIN:VEVENT
+UID:prc-post-20261117@physiorehabcenter
+DTSTAMP:20261116T190737Z
+DTSTART;TZID=America/Toronto:20261117T100000
+DTEND;TZID=America/Toronto:20261117T103000
+SUMMARY:📅 PRC Post: WSIB Reel V6 (scheduled FB + IG)
+DESCRIPTION:Scheduled for 10 AM ET: Facebook Reel (ID 1144808961421091)\, I
+ nstagram Reel (ID 989779154190983). Google Business Profile NOT scheduled 
+ — Google sign-in declined\; decision pending. After it posts\, shared to
+  Facebook Story + Instagram Story (~10:15 AM).
+END:VEVENT
+BEGIN:VEVENT
+UID:prc-post-20261118@physiorehabcenter
+DTSTAMP:20261116T190737Z
+DTSTART;TZID=America/Toronto:20261118T100000
+DTEND;TZID=America/Toronto:20261118T103000
+SUMMARY:⏳ PRC Post: IT/desk persona (pending scheduling)
+DESCRIPTION:Video V3 final ready\, copy approved Nov 8. 'Screen at eye leve
+ l. Feet flat on the floor.' Scheduling go-ahead still missing.
+END:VEVENT
+BEGIN:VEVENT
+UID:prc-post-20261120@physiorehabcenter
+DTSTAMP:20261116T190737Z
+DTSTART;TZID=America/Toronto:20261120T100000
+DTEND;TZID=America/Toronto:20261120T103000
+SUMMARY:⏳ PRC Post: Warehouse persona (pending scheduling)
+DESCRIPTION:Video V3 final ready\, copy approved Nov 8. 'Lift close to your
+  body.' Scheduling go-ahead still missing.
+END:VEVENT
+BEGIN:VEVENT
+UID:prc-post-20261123@physiorehabcenter
+DTSTAMP:20261116T190737Z
+DTSTART;TZID=America/Toronto:20261123T100000
+DTEND;TZID=America/Toronto:20261123T103000
+SUMMARY:⏳ PRC Post: Delivery driver persona (pending scheduling)
+DESCRIPTION:Video V3 final ready\, copy approved Nov 8. 'Set your seat: kne
+ es level with your hips.' Scheduling go-ahead still missing.
+END:VEVENT
+BEGIN:VEVENT
+UID:prc-post-20261125@physiorehabcenter
+DTSTAMP:20261116T190737Z
+DTSTART;TZID=America/Toronto:20261125T100000
+DTEND;TZID=America/Toronto:20261125T103000
+SUMMARY:⏳ PRC Post: Retail persona (pending scheduling)
+DESCRIPTION:Video V3 final ready\, copy approved Nov 8. 'On your feet all d
+ ay? Shift your weight.' Scheduling go-ahead still missing.
+END:VEVENT
+END:VCALENDAR
