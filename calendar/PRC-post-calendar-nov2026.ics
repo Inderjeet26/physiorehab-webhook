@@ -24,7 +24,7 @@ END:DAYLIGHT
 END:VTIMEZONE
 BEGIN:VEVENT
 UID:prc-post-20261102@physiorehabcenter
-DTSTAMP:20261116T215519Z
+DTSTAMP:20261117T191450Z
 DTSTART;TZID=America/Toronto:20261102T100000
 DTEND;TZID=America/Toronto:20261102T103000
 SUMMARY:✅ PRC Post: Review Spotlight v3 carousel (published)
@@ -33,7 +33,7 @@ DESCRIPTION:Carousel — 5.0 · 238 Google reviews. Published on Facebook\,
 END:VEVENT
 BEGIN:VEVENT
 UID:prc-post-20261104@physiorehabcenter
-DTSTAMP:20261116T215519Z
+DTSTAMP:20261117T191450Z
 DTSTART;TZID=America/Toronto:20261104T100000
 DTEND;TZID=America/Toronto:20261104T103000
 SUMMARY:✅ PRC Post: Pelvic carousel (published)
@@ -42,7 +42,7 @@ DESCRIPTION:Published on Facebook\, Instagram\, and Google Business Profile
 END:VEVENT
 BEGIN:VEVENT
 UID:prc-post-20261106@physiorehabcenter
-DTSTAMP:20261116T215519Z
+DTSTAMP:20261117T191450Z
 DTSTART;TZID=America/Toronto:20261106T100000
 DTEND;TZID=America/Toronto:20261106T103000
 SUMMARY:✅ PRC Post: 5 Signs carousel (published)
@@ -51,7 +51,7 @@ DESCRIPTION:Published on Facebook\, Instagram\, and Google Business Profile
 END:VEVENT
 BEGIN:VEVENT
 UID:prc-post-20261109@physiorehabcenter
-DTSTAMP:20261116T215519Z
+DTSTAMP:20261117T191450Z
 DTSTART;TZID=America/Toronto:20261109T100000
 DTEND;TZID=America/Toronto:20261109T103000
 SUMMARY:✅ PRC Post: MVA Reel (published FB + IG)
@@ -60,7 +60,7 @@ DESCRIPTION:Published on Facebook and Instagram at 10 AM ET. Google Busines
 END:VEVENT
 BEGIN:VEVENT
 UID:prc-post-20261111@physiorehabcenter
-DTSTAMP:20261116T215519Z
+DTSTAMP:20261117T191450Z
 DTSTART;TZID=America/Toronto:20261111T100000
 DTEND;TZID=America/Toronto:20261111T103000
 SUMMARY:❌ PRC Post: Nov 11 slot (missed)
@@ -69,7 +69,7 @@ DESCRIPTION:No post went out — copy was unapproved that morning\, so noth
 END:VEVENT
 BEGIN:VEVENT
 UID:prc-post-20261113@physiorehabcenter
-DTSTAMP:20261116T215519Z
+DTSTAMP:20261117T191450Z
 DTSTART;TZID=America/Toronto:20261113T100000
 DTEND;TZID=America/Toronto:20261113T103000
 SUMMARY:✅ PRC Post: Massage Reel V6 (published FB + IG)
@@ -79,7 +79,7 @@ DESCRIPTION:Published on Facebook and Instagram at 10 AM ET. Google Busines
 END:VEVENT
 BEGIN:VEVENT
 UID:prc-post-20261116@physiorehabcenter
-DTSTAMP:20261116T215519Z
+DTSTAMP:20261117T191450Z
 DTSTART;TZID=America/Toronto:20261116T100000
 DTEND;TZID=America/Toronto:20261116T103000
 SUMMARY:❌ PRC Post: Construction persona (missed — unscheduled)
@@ -89,18 +89,20 @@ DESCRIPTION:10 AM slot passed with nothing posted. Video V5 final ready (WS
 END:VEVENT
 BEGIN:VEVENT
 UID:prc-post-20261117@physiorehabcenter
-DTSTAMP:20261116T215519Z
+DTSTAMP:20261117T191450Z
 DTSTART;TZID=America/Toronto:20261117T100000
 DTEND;TZID=America/Toronto:20261117T103000
-SUMMARY:📅 PRC Post: WSIB Reel V6 (scheduled FB + IG)
-DESCRIPTION:Scheduled for 10 AM ET: Facebook Reel (ID 1144808961421091)\, I
- nstagram Reel (ID 989779154190983). Google Business Profile NOT scheduled 
- — Google sign-in declined\; decision pending. After it posts\, shared to
-  Facebook Story + Instagram Story (~10:15 AM).
+SUMMARY:✅ PRC Post: WSIB Reel V6 (published FB + IG)
+DESCRIPTION:Published on Facebook and Instagram at 10 AM ET. Facebook: 11 v
+ iews\, 1 reaction\, 1 share\, 0 comments (2 engagements) as of 2:11 PM ET.
+  Instagram Reel https://www.instagram.com/reel/Df2NA7DHvIW/ — 1 like\, 0
+  comments. Google Business Profile NOT scheduled — Google sign-in declin
+ ed\; decision pending. Story shares: IG Story publish approved 2:12 PM\, s
+ hare run still in progress at 2:14 PM\; Facebook Story not yet verified.
 END:VEVENT
 BEGIN:VEVENT
 UID:prc-post-20261118@physiorehabcenter
-DTSTAMP:20261116T215519Z
+DTSTAMP:20261117T191450Z
 DTSTART;TZID=America/Toronto:20261118T100000
 DTEND;TZID=America/Toronto:20261118T103000
 SUMMARY:⏳ PRC Post: IT/desk persona (pending scheduling)
@@ -110,7 +112,7 @@ DESCRIPTION:Video V5 final ready (WSIB template + Aria voiceover)\, copy ap
 END:VEVENT
 BEGIN:VEVENT
 UID:prc-post-20261120@physiorehabcenter
-DTSTAMP:20261116T215519Z
+DTSTAMP:20261117T191450Z
 DTSTART;TZID=America/Toronto:20261120T100000
 DTEND;TZID=America/Toronto:20261120T103000
 SUMMARY:⏳ PRC Post: Warehouse persona (pending scheduling)
@@ -120,7 +122,7 @@ DESCRIPTION:Video V5 final ready (WSIB template + Aria voiceover)\, copy ap
 END:VEVENT
 BEGIN:VEVENT
 UID:prc-post-20261123@physiorehabcenter
-DTSTAMP:20261116T215519Z
+DTSTAMP:20261117T191450Z
 DTSTART;TZID=America/Toronto:20261123T100000
 DTEND;TZID=America/Toronto:20261123T103000
 SUMMARY:⏳ PRC Post: Delivery driver persona (pending scheduling)
@@ -130,7 +132,7 @@ DESCRIPTION:Video V5 final ready (WSIB template + Aria voiceover)\, copy ap
 END:VEVENT
 BEGIN:VEVENT
 UID:prc-post-20261125@physiorehabcenter
-DTSTAMP:20261116T215519Z
+DTSTAMP:20261117T191450Z
 DTSTART;TZID=America/Toronto:20261125T100000
 DTEND;TZID=America/Toronto:20261125T103000
 SUMMARY:⏳ PRC Post: Retail persona (pending scheduling)
